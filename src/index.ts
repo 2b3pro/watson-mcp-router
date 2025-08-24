@@ -84,23 +84,11 @@ async function main() {
                 console.log(`[MCP Router] Tool '${toolMetadata.name}' call successful. Raw result: ${JSON.stringify(rawResult, null, 2)}`);
 
                 // Wrap the raw result (which is a ToolResponse) into the expected message format
-                return {
-                    messages: [{
-                        content: (rawResult.content as any[])[0] as any, // Cast rawResult.content to any[] then its first element to any
-                        role: "assistant" // Changed from "tool" to "assistant"
-                    } as any], // Cast the entire message object to any
-                    _meta: rawResult._meta || {}
-                };
+                return rawResult;
             } catch (error: any) {
                 console.error(`[MCP Router] Error calling tool '${toolMetadata.originalToolName}' on server '${toolMetadata.serverName}':`, error);
                 // Return an error response in the unified message format
-                return {
-                    messages: [{
-                        content: { type: "text", text: `Error: ${error.message || 'Unknown error'}` } as any, // Single ContentPart for error, cast to any
-                        role: "assistant"
-                    } as any], // Cast the entire message object to any
-                    _meta: {}
-                };
+                return `Error: ${error.message || 'Unknown error'}` as any;
             }
         };
 
