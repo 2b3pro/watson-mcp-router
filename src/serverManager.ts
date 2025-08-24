@@ -418,6 +418,10 @@ export class ServerManager {
         return this.unifiedPrompts;
     }
 
+    public getSpawnedServersCount(): number {
+        return this.spawnedServers.size;
+    }
+
     public getSpawnedServer(serverName: string): { process: ChildProcess; client: Client } | undefined {
         return this.spawnedServers.get(serverName);
     }

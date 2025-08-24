@@ -100,18 +100,30 @@ async function main() {
             inputSchema: toolMetadata.inputSchema ? convertJsonSchemaToZod(toolMetadata.inputSchema) : undefined
         }, proxyHandler);
 
-        // Testing an addition tool
-        mcpServer.registerTool("add",
+        // Register server statistics resource
+        mcpServer.registerResource(
+            "server-stats",
+            "stats://mcp-router-server",
             {
-                title: "Addition Tool",
-                description: "Add two numbers",
-                inputSchema: { a: z.number(), b: z.number() }
+                title: "MCP Router Server Statistics",
+                description: "Provides statistics on active servers, tools, resources, and prompts.",
+                mimeType: "application/json"
             },
-            async ({ a, b }) => ({
-                content: [{ type: "text", text: String(a + b) }]
-            })
+            async (uri) => {
+                const stats = {
+                    activeServers: serverManager.getSpawnedServersCount(),
+                    activeTools: serverManager.getUnifiedTools().length,
+                    activeResources: serverManager.getUnifiedResources().length,
+                    activePrompts: serverManager.getUnifiedPrompts().length,
+                };
+                return {
+                    contents: [{
+                        uri: uri.href,
+                        text: JSON.stringify(stats, null, 2)
+                    }]
+                };
+            }
         );
-
     });
 
     serverManager.getUnifiedResources().forEach((resourceMetadata: UnifiedResourceMetadata) => {
