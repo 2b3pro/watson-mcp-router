@@ -32,6 +32,23 @@ To set up the Watson MCP Router, follow these steps:
     yarn install
     ```
 
+## Dockerization
+
+To build and run the Watson MCP Router using Docker:
+
+1.  **Build the Docker Image**:
+    Navigate to the project's root directory in your terminal and run:
+    ```bash
+    docker build -t watson-mcp-router .
+    ```
+
+2.  **Run the Docker Container**:
+    To run the Docker container, exposing port 3000 (assuming your application listens on this port):
+    ```bash
+    docker run -p 3000:3000 watson-mcp-router
+    ```
+    You can adjust the port mapping (`-p 3000:3000`) if your application listens on a different port or if you want to map it to a different host port.
+
 ## Configuration
 
 The Watson MCP Router uses a `watson_mcprouter_config.json` file at the root of the project to define the child MCP servers it should manage.
