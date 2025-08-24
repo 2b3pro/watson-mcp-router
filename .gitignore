@@ -65,3 +65,7 @@ build/
 # Build artifacts
 dist/
 build/
+
+# Project-related
+*_config.json
+*-lock.json
