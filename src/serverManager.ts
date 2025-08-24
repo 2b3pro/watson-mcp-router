@@ -2,8 +2,35 @@ import { ChildProcess, spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import * as stream from 'stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-// StdioClientTransport is not directly used for spawning here, but CustomStdioClientTransport implements its interface.
-// import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+// We are not importing RegisteredTool, RegisteredResource, RegisteredPrompt from sdk/server/mcp.js here,
+// as the client.listX() methods return slightly different structures.
+// Instead, we define interfaces that match what client.listX() actually returns.
+
+// Define interfaces that match the actual response structure from client.listTools()
+interface ClientToolResponse {
+    name: string;
+    title?: string;
+    description?: string;
+    inputSchema?: any;
+    outputSchema?: any;
+}
+
+// Define interfaces that match the actual response structure from client.listResources()
+interface ClientResourceResponse {
+    uri: string;
+    name?: string;
+    title?: string;
+    description?: string;
+    mimeType?: string;
+}
+
+// Define interfaces that match the actual response structure from client.listPrompts()
+interface ClientPromptResponse {
+    name: string;
+    title?: string;
+    description?: string;
+    argsSchema?: any;
+}
 
 interface McpServerConfig {
     autoApprove?: string[];
@@ -27,33 +54,49 @@ class CustomStdioClientTransport {
     private _onmessageCallback: ((message: any) => void) | undefined;
     private _oncloseCallback: (() => void) | undefined;
     private _onerrorCallback: ((error: Error) => void) | undefined;
+    private _buffer: string = ''; // Buffer to accumulate incoming data
 
     constructor(input: NodeJS.ReadableStream, output: NodeJS.WritableStream) {
         this._input = input;
         this._output = output;
 
         this._input.on('data', (data) => {
-            try {
-                // MCP messages are usually newline-delimited JSON
-                const messages = data.toString().split('\n').filter(Boolean);
-                messages.forEach((msg: string) => { // Explicitly type msg as string
-                    const message = JSON.parse(msg);
+            this._buffer += data.toString(); // Append incoming data to the buffer
+            console.log(`[CustomStdioClientTransport] Received raw data from child, buffer size: ${this._buffer.length}`);
+
+            let newlineIndex: number;
+            // Process the buffer line by line
+            while ((newlineIndex = this._buffer.indexOf('\n')) !== -1) {
+                const line = this._buffer.substring(0, newlineIndex).trim();
+                this._buffer = this._buffer.substring(newlineIndex + 1); // Remove the processed line from the buffer
+
+                if (line.length === 0) {
+                    continue; // Skip empty lines
+                }
+
+                console.log(`[CustomStdioClientTransport] Processing line from buffer: ${line}`);
+                try {
+                    const message = JSON.parse(line);
+                    console.log(`[CustomStdioClientTransport] Parsed message from child: ${JSON.stringify(message)}`);
                     if (this._onmessageCallback) {
                         this._onmessageCallback(message);
                     }
-                });
-            } catch (e) {
-                if (this._onerrorCallback) {
-                    this._onerrorCallback(new Error(`Failed to parse message from child process: ${data.toString()}`));
+                } catch (e) {
+                    console.error(`[CustomStdioClientTransport] Error parsing line from child: "${line}"`, e);
+                    if (this._onerrorCallback) {
+                        this._onerrorCallback(new Error(`Failed to parse message from child process: "${line}"`));
+                    }
                 }
             }
         });
         this._input.on('close', () => {
+            console.log('[CustomStdioClientTransport] Child input stream closed.');
             if (this._oncloseCallback) {
                 this._oncloseCallback();
             }
         });
         this._input.on('error', (err) => {
+            console.error('[CustomStdioClientTransport] Child input stream error:', err);
             if (this._onerrorCallback) {
                 this._onerrorCallback(err);
             }
@@ -61,17 +104,33 @@ class CustomStdioClientTransport {
     }
 
     public async connect(): Promise<void> {
+        console.log('[CustomStdioClientTransport] Connecting...');
         return Promise.resolve();
     }
 
     public send(message: any): Promise<void> {
+        const messageString = JSON.stringify(message);
+        console.log(`[CustomStdioClientTransport] Sending message to child: ${messageString}`);
         return new Promise((resolve, reject) => {
-            this._output.write(JSON.stringify(message) + '\n', (err) => {
-                if (err) {
-                    return reject(err);
-                }
+            // Ensure the stream is writable before attempting to write
+            if (!this._output.writable) {
+                const error = new Error('[CustomStdioClientTransport] Child stdin stream is not writable.');
+                console.error(error.message);
+                return reject(error);
+            }
+
+            const canWrite = this._output.write(messageString + '\n');
+
+            if (!canWrite) {
+                // Buffer is full, wait for 'drain' event
+                this._output.once('drain', () => {
+                    console.log(`[CustomStdioClientTransport] Drain event received for message: ${messageString}`);
+                    resolve();
+                });
+            } else {
+                // Write was successful immediately
                 resolve();
-            });
+            }
         });
     }
 
@@ -98,12 +157,42 @@ class CustomStdioClientTransport {
     }
 }
 
+// Define interfaces that represent the *metadata* needed for registration, plus serverName
+export interface UnifiedToolMetadata {
+    name: string; // The unified name (serverName_originalName)
+    title?: string; // Optional title
+    description?: string;
+    inputSchema?: any; // Input schema for the tool (raw JSON schema)
+    serverName: string; // The name of the server this tool came from
+    originalToolName: string; // The tool's name on its original server
+}
+
+export interface UnifiedResourceMetadata {
+    name?: string; // The unified name (serverName_originalName) - optional as resource might only have URI
+    uri: string; // The unified URI (serverName_originalUri)
+    title?: string;
+    description?: string;
+    mimeType?: string;
+    serverName: string;
+    originalResourceUri: string; // The resource's URI on its original server
+}
+
+export interface UnifiedPromptMetadata {
+    name: string; // The unified name (serverName_originalName)
+    title?: string;
+    description?: string;
+    argsSchema?: any; // Arguments schema for the prompt
+    serverName: string;
+    originalPromptName: string; // The prompt's name on its original server
+}
+
 export class ServerManager {
     private config: McpRouterConfig | null = null;
-    private spawnedServers: Map<string, { process: ChildProcess; client: Client }> = new Map();
-    private unifiedTools: any[] = [];
-    private unifiedResources: any[] = [];
-    private unifiedPrompts: any[] = [];
+    // Explicitly add 'name' to the Client type in spawnedServers
+    private spawnedServers: Map<string, { process: ChildProcess; client: Client & { name: string } }> = new Map();
+    private unifiedTools: UnifiedToolMetadata[] = [];
+    private unifiedResources: UnifiedResourceMetadata[] = [];
+    private unifiedPrompts: UnifiedPromptMetadata[] = [];
     private configPath: string;
 
     constructor(configPath: string) {
@@ -144,7 +233,7 @@ export class ServerManager {
                 const client = new Client({
                     name: serverName,
                     version: "1.0.0",
-                });
+                }) as Client & { name: string }; // Cast immediately after creation
 
                 childProcess.stderr.on('data', (data) => {
                     console.error(`[${serverName} STDERR]: ${data.toString()}`);
@@ -162,13 +251,13 @@ export class ServerManager {
                 await client.connect(customStdioTransport);
 
                 // Get tools and resources from the connected client
-                let tools: any[] = [];
-                let resources: any[] = [];
-                let prompts: any[] = [];
+                let tools: ClientToolResponse[] = [];
+                let resources: ClientResourceResponse[] = [];
+                let prompts: ClientPromptResponse[] = [];
 
                 try {
                     const response = await client.listTools();
-                    tools = Array.isArray(response.tools) ? response.tools : [];
+                    tools = Array.isArray(response.tools) ? response.tools as ClientToolResponse[] : [];
                     console.log(`[${serverName}] Received tools:`, tools);
                     if (!Array.isArray(tools)) {
                         console.warn(`[${serverName}] client.listTools() did not return an array. Received:`, response);
@@ -179,7 +268,7 @@ export class ServerManager {
 
                 try {
                     const response = await client.listResources();
-                    resources = Array.isArray(response.resources) ? response.resources : [];
+                    resources = Array.isArray(response.resources) ? response.resources as ClientResourceResponse[] : [];
                     console.log(`[${serverName}] Received resources:`, resources);
                     if (!Array.isArray(resources)) {
                         console.warn(`[${serverName}] client.listResources() did not return an array. Received:`, response);
@@ -190,7 +279,7 @@ export class ServerManager {
 
                 try {
                     const response = await client.listPrompts();
-                    prompts = Array.isArray(response.prompts) ? response.prompts : [];
+                    prompts = Array.isArray(response.prompts) ? response.prompts as ClientPromptResponse[] : [];
                     console.log(`[${serverName}] Received prompts:`, prompts);
                     if (!Array.isArray(prompts)) {
                         console.warn(`[${serverName}] client.listPrompts() did not return an array. Received:`, response);
@@ -199,18 +288,37 @@ export class ServerManager {
                     console.error(`[${serverName}] Error listing prompts:`, promptError);
                 }
 
-                tools.forEach(tool => {
-                    tool.name = `${serverName}_${tool.name}`;
-                    this.unifiedTools.push(tool);
+                tools.forEach((tool: ClientToolResponse) => {
+                    this.unifiedTools.push({
+                        name: `${serverName}_${tool.name}`,
+                        title: tool.title || `${serverName}_${tool.name}`,
+                        description: tool.description,
+                        inputSchema: tool.inputSchema, // Pass raw JSON schema
+                        serverName: serverName,
+                        originalToolName: tool.name
+                    });
                 });
-                resources.forEach(resource => {
-                    resource.uri = `${serverName}_${resource.uri}`;
-                    this.unifiedResources.push(resource);
+                resources.forEach((resource: ClientResourceResponse) => {
+                    this.unifiedResources.push({
+                        name: resource.name || undefined,
+                        uri: `${serverName}_${resource.uri}`,
+                        title: resource.title || `${serverName}_${resource.uri}`,
+                        description: resource.description,
+                        mimeType: resource.mimeType,
+                        serverName: serverName,
+                        originalResourceUri: resource.uri
+                    });
                 });
 
-                prompts.forEach(prompt => {
-                    prompt.name = `${serverName}_${prompt.name}`;
-                    this.unifiedPrompts.push(prompt);
+                prompts.forEach((prompt: ClientPromptResponse) => {
+                    this.unifiedPrompts.push({
+                        name: `${serverName}_${prompt.name}`,
+                        title: prompt.title || `${serverName}_${prompt.name}`,
+                        description: prompt.description,
+                        argsSchema: prompt.argsSchema,
+                        serverName: serverName,
+                        originalPromptName: prompt.name
+                    });
                 });
 
                 console.log(`Server ${serverName} spawned and capabilities loaded.`);
@@ -232,9 +340,16 @@ export class ServerManager {
             // itself if it's not designed to fetch from the remote after initialization.
             // Using listTools, listResources, and listPrompts is safer for dynamic capabilities.
             client.listTools().then(response => {
-                const rebuiltTools = Array.isArray(response.tools) ? response.tools : [];
-                rebuiltTools.forEach(tool => {
-                    this.unifiedTools.push(tool);
+                const rebuiltTools = Array.isArray(response.tools) ? response.tools as ClientToolResponse[] : [];
+                rebuiltTools.forEach((tool: ClientToolResponse) => {
+                    this.unifiedTools.push({
+                        name: `${client.name}_${tool.name}`, // client.name is now explicitly typed
+                        title: tool.title || `${client.name}_${tool.name}`,
+                        description: tool.description,
+                        inputSchema: tool.inputSchema, // Pass raw JSON schema
+                        serverName: client.name, // client.name is now explicitly typed
+                        originalToolName: tool.name
+                    });
                 });
                 if (!Array.isArray(response.tools)) {
                     console.warn(`Rebuild: client.listTools() did not return an array. Received:`, response);
@@ -244,9 +359,17 @@ export class ServerManager {
             });
 
             client.listResources().then(response => {
-                const rebuiltResources = Array.isArray(response.resources) ? response.resources : [];
-                rebuiltResources.forEach(resource => {
-                    this.unifiedResources.push(resource);
+                const rebuiltResources = Array.isArray(response.resources) ? response.resources as ClientResourceResponse[] : [];
+                rebuiltResources.forEach((resource: ClientResourceResponse) => {
+                    this.unifiedResources.push({
+                        name: resource.name || undefined,
+                        uri: `${client.name}_${resource.uri}`, // client.name is now explicitly typed
+                        title: resource.title || `${client.name}_${resource.uri}`,
+                        description: resource.description,
+                        mimeType: resource.mimeType,
+                        serverName: client.name, // client.name is now explicitly typed
+                        originalResourceUri: resource.uri
+                    });
                 });
                 if (!Array.isArray(response.resources)) {
                     console.warn(`Rebuild: client.listResources() did not return an array. Received:`, response);
@@ -256,9 +379,16 @@ export class ServerManager {
             });
 
             client.listPrompts().then(response => {
-                const rebuiltPrompts = Array.isArray(response.prompts) ? response.prompts : [];
-                rebuiltPrompts.forEach(prompt => {
-                    this.unifiedPrompts.push(prompt);
+                const rebuiltPrompts = Array.isArray(response.prompts) ? response.prompts as ClientPromptResponse[] : [];
+                rebuiltPrompts.forEach((prompt: ClientPromptResponse) => {
+                    this.unifiedPrompts.push({
+                        name: `${client.name}_${prompt.name}`, // client.name is now explicitly typed
+                        title: prompt.title || `${client.name}_${prompt.name}`,
+                        description: prompt.description,
+                        argsSchema: prompt.argsSchema,
+                        serverName: client.name, // client.name is now explicitly typed
+                        originalPromptName: prompt.name
+                    });
                 });
                 if (!Array.isArray(response.prompts)) {
                     console.warn(`Rebuild: client.listPrompts() did not return an array. Received:`, response);
@@ -269,16 +399,20 @@ export class ServerManager {
         });
     }
 
-    public getUnifiedTools(): any[] {
+    public getUnifiedTools(): UnifiedToolMetadata[] {
         return this.unifiedTools;
     }
 
-    public getUnifiedResources(): any[] {
+    public getUnifiedResources(): UnifiedResourceMetadata[] {
         return this.unifiedResources;
     }
 
-    public getUnifiedPrompts(): any[] {
+    public getUnifiedPrompts(): UnifiedPromptMetadata[] {
         return this.unifiedPrompts;
+    }
+
+    public getSpawnedServer(serverName: string): { process: ChildProcess; client: Client } | undefined {
+        return this.spawnedServers.get(serverName);
     }
 
     public async stopAllServers(): Promise<void> {
