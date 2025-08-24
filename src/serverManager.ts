@@ -11,8 +11,8 @@ interface ClientToolResponse {
     name: string;
     title?: string;
     description?: string;
-    inputSchema?: any;
-    outputSchema?: any;
+    inputSchema?: object; // Changed from any to object
+    outputSchema?: object; // Changed from any to object
 }
 
 // Define interfaces that match the actual response structure from client.listResources()
@@ -29,7 +29,7 @@ interface ClientPromptResponse {
     name: string;
     title?: string;
     description?: string;
-    argsSchema?: any;
+    argsSchema?: object; // Changed from any to object
 }
 
 interface McpServerConfig {
@@ -78,6 +78,13 @@ class CustomStdioClientTransport {
                 try {
                     const message = JSON.parse(line);
                     console.log(`[CustomStdioClientTransport] Parsed message from child: ${JSON.stringify(message)}`);
+
+                    // Correct structuredContent: null to {} if present in a result message
+                    if (message && message.jsonrpc === "2.0" && message.result && message.result.structuredContent === null) {
+                        console.log(`[CustomStdioClientTransport] Correcting structuredContent: null to {}.`);
+                        message.result.structuredContent = {};
+                    }
+
                     if (this._onmessageCallback) {
                         this._onmessageCallback(message);
                     }
@@ -162,7 +169,7 @@ export interface UnifiedToolMetadata {
     name: string; // The unified name (serverName_originalName)
     title?: string; // Optional title
     description?: string;
-    inputSchema?: any; // Input schema for the tool (raw JSON schema)
+    inputSchema?: object; // Changed from any to object
     serverName: string; // The name of the server this tool came from
     originalToolName: string; // The tool's name on its original server
 }
@@ -181,7 +188,7 @@ export interface UnifiedPromptMetadata {
     name: string; // The unified name (serverName_originalName)
     title?: string;
     description?: string;
-    argsSchema?: any; // Arguments schema for the prompt
+    argsSchema?: object; // Changed from any to object
     serverName: string;
     originalPromptName: string; // The prompt's name on its original server
 }
@@ -293,7 +300,7 @@ export class ServerManager {
                         name: `${serverName}_${tool.name}`,
                         title: tool.title || `${serverName}_${tool.name}`,
                         description: tool.description,
-                        inputSchema: tool.inputSchema, // Pass raw JSON schema
+                        inputSchema: tool.inputSchema ? JSON.parse(JSON.stringify(tool.inputSchema)) : undefined, // Apply deep clone
                         serverName: serverName,
                         originalToolName: tool.name
                     });
@@ -315,7 +322,7 @@ export class ServerManager {
                         name: `${serverName}_${prompt.name}`,
                         title: prompt.title || `${serverName}_${prompt.name}`,
                         description: prompt.description,
-                        argsSchema: prompt.argsSchema,
+                        argsSchema: prompt.argsSchema ? JSON.parse(JSON.stringify(prompt.argsSchema)) : undefined, // Apply deep clone
                         serverName: serverName,
                         originalPromptName: prompt.name
                     });
@@ -346,7 +353,7 @@ export class ServerManager {
                         name: `${client.name}_${tool.name}`, // client.name is now explicitly typed
                         title: tool.title || `${client.name}_${tool.name}`,
                         description: tool.description,
-                        inputSchema: tool.inputSchema, // Pass raw JSON schema
+                        inputSchema: tool.inputSchema ? JSON.parse(JSON.stringify(tool.inputSchema)) : undefined, // Apply deep clone
                         serverName: client.name, // client.name is now explicitly typed
                         originalToolName: tool.name
                     });
@@ -385,7 +392,7 @@ export class ServerManager {
                         name: `${client.name}_${prompt.name}`, // client.name is now explicitly typed
                         title: prompt.title || `${client.name}_${prompt.name}`,
                         description: prompt.description,
-                        argsSchema: prompt.argsSchema,
+                        argsSchema: prompt.argsSchema ? JSON.parse(JSON.stringify(prompt.argsSchema)) : undefined, // Apply deep clone
                         serverName: client.name, // client.name is now explicitly typed
                         originalPromptName: prompt.name
                     });

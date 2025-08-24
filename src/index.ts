@@ -6,12 +6,35 @@ import {
     RegisteredPrompt
 } from '@modelcontextprotocol/sdk/server/mcp.js'; // Removed ToolResponse as it's not exported
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'; // Removed ContentPart import
 import { randomUUID } from 'node:crypto';
 import { ServerManager, UnifiedToolMetadata, UnifiedResourceMetadata, UnifiedPromptMetadata } from './serverManager'; // Import unified metadata types
 import path from 'path';
 import { readFileSync } from 'fs';
-import { z } from "zod"; // Import zod for schema validation
+import { z } from "zod";
+
+function convertJsonSchemaToZod(jsonSchema: any): z.ZodRawShape | undefined {
+    if (!jsonSchema || typeof jsonSchema !== 'object' || jsonSchema.type !== 'object' || !jsonSchema.properties) {
+        return undefined;
+    }
+
+    const shape: z.ZodRawShape = {};
+    for (const key in jsonSchema.properties) {
+        const prop = jsonSchema.properties[key];
+        if (prop.type === 'string') {
+            shape[key] = z.string();
+        } else if (prop.type === 'number' || prop.type === 'integer') {
+            shape[key] = z.number();
+        } else if (prop.type === 'boolean') {
+            shape[key] = z.boolean();
+        } else if (prop.type === 'array') {
+            shape[key] = z.array(z.any()); // Basic array handling
+        } else {
+            shape[key] = z.any(); // Fallback for unsupported types
+        }
+    }
+    return shape; // Return the raw shape
+}
 
 const configPath = path.join(__dirname, '..', 'watson_mcprouter_config.json');
 const serverManager = new ServerManager(configPath);
@@ -35,11 +58,6 @@ async function main() {
     const mcpServer = new McpServer({
         name: "watson-mcprouter",
         version: routerVersion,
-        capabilities: {
-            tools: serverManager.getUnifiedTools(),
-            resources: serverManager.getUnifiedResources(),
-            prompts: serverManager.getUnifiedPrompts(),
-        }
     });
 
     // Register tools, resources, and prompts from serverManager
@@ -57,62 +75,55 @@ async function main() {
             }
             try {
                 // Construct the payload for the child server's tool call
-                const toolCallPayload = {
-                    name: toolMetadata.originalToolName, // The tool's original name on the child server
-                    arguments: args.arguments || {} // The arguments for the tool
-                };
-
                 // Call the tool on the specific child server's client
-                // @ts-ignore - Ignoring type error due to SDK type definition mismatch for callTool's arguments
-                const rawResult = await serverEntry.client.callTool(toolCallPayload);
+                const rawResult = await serverEntry.client.callTool({
+                    name: toolMetadata.originalToolName,
+                    arguments: args,
+                });
 
                 console.log(`[MCP Router] Tool '${toolMetadata.name}' call successful. Raw result: ${JSON.stringify(rawResult, null, 2)}`);
 
-                // Wrap the raw result into a ToolResponse structure
-                const content = [{
-                    type: "text",
-                    text: JSON.stringify(rawResult, null, 2)
-                }];
-
+                // Wrap the raw result (which is a ToolResponse) into the expected message format
                 return {
-                    content: content,
-                    _meta: {} // Optionally include any meta information if available/relevant
+                    messages: [{
+                        content: (rawResult.content as any[])[0] as any, // Cast rawResult.content to any[] then its first element to any
+                        role: "assistant" // Changed from "tool" to "assistant"
+                    } as any], // Cast the entire message object to any
+                    _meta: rawResult._meta || {}
                 };
             } catch (error: any) {
                 console.error(`[MCP Router] Error calling tool '${toolMetadata.originalToolName}' on server '${toolMetadata.serverName}':`, error);
-                // Return an error response
+                // Return an error response in the unified message format
                 return {
-                    content: [{
-                        type: "text",
-                        text: `Error: ${error.message || 'Unknown error'}`
-                    }],
-                    isError: true,
-                    _meta: {} // Optionally include error details in meta
+                    messages: [{
+                        content: { type: "text", text: `Error: ${error.message || 'Unknown error'}` } as any, // Single ContentPart for error, cast to any
+                        role: "assistant"
+                    } as any], // Cast the entire message object to any
+                    _meta: {}
                 };
             }
         };
 
-        // Convert raw JSON inputSchema to a Zod-compatible shape
-        let zodInputShape: { [key: string]: z.ZodTypeAny } | undefined;
-        if (toolMetadata.inputSchema) {
-            // Check if it's an empty object schema
-            if (Object.keys(toolMetadata.inputSchema).length === 0 && toolMetadata.inputSchema.constructor === Object) {
-                zodInputShape = {}; // Represent z.object({}) as an empty shape
-            } else {
-                // For complex schemas, use a generic catch-all.
-                // A more robust solution requires a full JSON Schema to Zod converter library that outputs ZodRawShape.
-                console.warn(`[MCP Router] Complex inputSchema found for tool ${toolMetadata.name}. Providing z.any().shape. Schema:`, JSON.stringify(toolMetadata.inputSchema));
-                // This means inputSchema will effectively be undefined for actual validation,
-                // but it satisfies the type requirement for ZodRawShape.
-                zodInputShape = undefined; // Represents z.any().shape
-            }
-        }
+        console.log(`[MCP Router] Registering tool: ${toolMetadata.name} with input schema: ${JSON.stringify(toolMetadata.inputSchema, null, 2)}`)
 
         mcpServer.registerTool(toolMetadata.name, { // Use toolMetadata.name for registration
             title: toolMetadata.title,
             description: toolMetadata.description,
-            inputSchema: zodInputShape // Pass the Zod-compatible shape
+            inputSchema: toolMetadata.inputSchema ? convertJsonSchemaToZod(toolMetadata.inputSchema) : undefined
         }, proxyHandler);
+
+        // Testing an addition tool
+        mcpServer.registerTool("add",
+            {
+                title: "Addition Tool",
+                description: "Add two numbers",
+                inputSchema: { a: z.number(), b: z.number() }
+            },
+            async ({ a, b }) => ({
+                content: [{ type: "text", text: String(a + b) }]
+            })
+        );
+
     });
 
     serverManager.getUnifiedResources().forEach((resourceMetadata: UnifiedResourceMetadata) => {
@@ -127,8 +138,9 @@ async function main() {
             }
             try {
                 // Call the resource on the specific child server's client using its original URI
-                // @ts-ignore - Ignoring type error due to SDK type definition mismatch for readResource's first argument
-                const rawResult = await serverEntry.client.readResource(resourceMetadata.originalResourceUri);
+                const rawResult = await serverEntry.client.readResource({
+                    uri: resourceMetadata.originalResourceUri
+                });
                 console.log(`[MCP Router] Resource '${resourceMetadata.uri}' read successful. Raw result: ${JSON.stringify(rawResult, null, 2)}`);
                 // Assuming rawResult is the content directly
                 return rawResult;
@@ -158,13 +170,20 @@ async function main() {
             }
             try {
                 // Call the prompt on the specific child server's client using its original name
-                // @ts-ignore - Ignoring type error due to SDK type definition mismatch for executePrompt
-                const rawResult = await serverEntry.client.executePrompt(promptMetadata.originalPromptName, args); // Reverted to executePrompt and added ts-ignore
+                const rawResult = await serverEntry.client.callTool({ // Changed to callTool
+                    name: promptMetadata.originalPromptName,
+                    arguments: args
+                });
                 console.log(`[MCP Router] Prompt '${promptMetadata.name}' execution successful. Raw result: ${JSON.stringify(rawResult, null, 2)}`);
-                // Assuming rawResult is the content directly
-                return rawResult;
+                // Wrap the raw result (which is a ToolResponse from callTool for prompts) into the expected message format
+                return {
+                    messages: [{
+                        content: (rawResult.content as any[])[0] as any, // Cast rawResult.content to any[] then its first element to any
+                        role: "assistant"
+                    } as any], // Cast the entire message object to any
+                    _meta: rawResult._meta || {}
+                };
             } catch (error: any) {
-                console.error(`[MCP Router] Error executing prompt '${promptMetadata.originalPromptName}' on server '${promptMetadata.serverName}':`, error);
                 throw new Error(`Failed to execute prompt: ${error.message || 'Unknown error'}`);
             }
         };
@@ -172,7 +191,7 @@ async function main() {
         mcpServer.registerPrompt(promptMetadata.name, { // Use promptMetadata.name for registration
             title: promptMetadata.title,
             description: promptMetadata.description,
-            argsSchema: promptMetadata.argsSchema
+            argsSchema: promptMetadata.argsSchema ? convertJsonSchemaToZod(promptMetadata.argsSchema) : undefined
         }, promptHandler);
     });
 
@@ -227,7 +246,7 @@ async function main() {
                 jsonrpc: '2.0',
                 error: {
                     code: -32003, // Internal error code
-                    message: `Internal server error: ${error.message || 'Unknown error during request handling.'}`,
+                    message: `Internal server error: ${error.message || 'Unknown error'}`,
                 },
                 id: req.body.id || null,
             });
