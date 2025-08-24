@@ -1,7 +1,6 @@
 import { ChildProcess, spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import * as stream from 'stream';
-import { Tool, Resource, Prompt } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 // StdioClientTransport is not directly used for spawning here, but CustomStdioClientTransport implements its interface.
 // import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -102,9 +101,9 @@ class CustomStdioClientTransport {
 export class ServerManager {
     private config: McpRouterConfig | null = null;
     private spawnedServers: Map<string, { process: ChildProcess; client: Client }> = new Map();
-    private unifiedTools: Tool[] = [];
-    private unifiedResources: Resource[] = [];
-    private unifiedPrompts: Prompt[] = [];
+    private unifiedTools: any[] = [];
+    private unifiedResources: any[] = [];
+    private unifiedPrompts: any[] = [];
     private configPath: string;
 
     constructor(configPath: string) {
@@ -163,9 +162,9 @@ export class ServerManager {
                 await client.connect(customStdioTransport);
 
                 // Get tools and resources from the connected client
-                let tools: Tool[] = [];
-                let resources: Resource[] = [];
-                let prompts: Prompt[] = [];
+                let tools: any[] = [];
+                let resources: any[] = [];
+                let prompts: any[] = [];
 
                 try {
                     const response = await client.listTools();
@@ -270,15 +269,15 @@ export class ServerManager {
         });
     }
 
-    public getUnifiedTools(): Tool[] {
+    public getUnifiedTools(): any[] {
         return this.unifiedTools;
     }
 
-    public getUnifiedResources(): Resource[] {
+    public getUnifiedResources(): any[] {
         return this.unifiedResources;
     }
 
-    public getUnifiedPrompts(): Prompt[] {
+    public getUnifiedPrompts(): any[] {
         return this.unifiedPrompts;
     }
 

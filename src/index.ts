@@ -1,5 +1,8 @@
 import express from 'express';
-import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+    McpServer,
+    ResourceTemplate
+} from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'; // Need this for session management
 import { randomUUID } from 'node:crypto'; // For sessionIdGenerator
@@ -38,7 +41,7 @@ async function main() {
     });
 
     // Register tools, resources, and prompts from serverManager
-    serverManager.getUnifiedTools().forEach(tool => {
+    serverManager.getUnifiedTools().forEach((tool: any) => {
         mcpServer.registerTool(tool.name, {
             title: tool.title || tool.name, // Use title if available, otherwise name
             description: tool.description,
@@ -46,7 +49,7 @@ async function main() {
         }, tool.handler);
     });
 
-    serverManager.getUnifiedResources().forEach(resource => {
+    serverManager.getUnifiedResources().forEach((resource: any) => {
         mcpServer.registerResource(resource.name, resource.template, {
             title: resource.title || resource.name, // Use title if available, otherwise name
             description: resource.description,
@@ -54,7 +57,7 @@ async function main() {
         }, resource.handler);
     });
 
-    serverManager.getUnifiedPrompts().forEach(prompt => {
+    serverManager.getUnifiedPrompts().forEach((prompt: any) => {
         mcpServer.registerPrompt(prompt.name, {
             title: prompt.title || prompt.name, // Use title if available, otherwise name
             description: prompt.description,

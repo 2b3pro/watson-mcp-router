@@ -1,0 +1,1 @@
+Ensure you follow the standards of the MCP Typescript MCP - https://github.com/modelcontextprotocol/typescript-sdk
