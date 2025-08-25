@@ -67,15 +67,14 @@ dist/
 build/
 
 # Project-related
-*_config.json
 *-lock.json
 .mcp_session_id
 .python_version
 uv.lock
 *.egg-info
+.config
 
 #virtual env
 .venv
 package-lock.json
 fabric-link/.python-version
-watson_mcprouter_config.json
