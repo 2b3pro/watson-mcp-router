@@ -76,3 +76,5 @@ uv.lock
 
 #virtual env
 .venv
+package-lock.json
+fabric-link/.python-version

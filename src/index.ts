@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import {
     McpServer,
     RegisteredTool,
@@ -47,6 +48,7 @@ async function main() {
 
     const app = express();
     app.use(express.json());
+    app.use(cors());
 
     // Map to store transports by session ID for stateful operation
     const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
@@ -197,20 +199,27 @@ async function main() {
 
     // Handle POST requests for client-to-server communication
     app.post('/mcp', async (req, res) => {
-        console.log(`[MCP Router] Received POST request to /mcp. Body: ${JSON.stringify(req.body, null, 2)}`);
+        console.log(`[MCP Router] Received POST request to /mcp. Body: ${JSON.stringify(req.body, null, 2)}, Headers: ${JSON.stringify(req.headers)}`);
         // Check for existing session ID
         const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        const isInit = isInitializeRequest(req.body);
+        console.log(`[MCP Router] DIAGNOSTIC: Session ID: ${sessionId}, isInitializeRequest: ${isInit}`);
+
         let transport: StreamableHTTPServerTransport;
 
         if (sessionId && transports[sessionId]) {
+            console.log(`[MCP Router] DIAGNOSTIC: Taking 'existing session' branch.`);
+            console.log(`[MCP Router] Reusing transport: ${sessionId}`)
             // Reuse existing transport
             transport = transports[sessionId];
-        } else if (!sessionId && isInitializeRequest(req.body)) {
+        } else if (!sessionId && isInit) {
+            console.log(`[MCP Router] DIAGNOSTIC: Taking 'new session' branch.`);
             // New initialization request
             transport = new StreamableHTTPServerTransport({
                 sessionIdGenerator: () => randomUUID(),
                 onsessioninitialized: (newSessionId) => {
                     // Store the transport by session ID
+                    console.log(`[MCP Router] New Session ID generated: ${newSessionId}`)
                     transports[newSessionId] = transport;
                 },
             });
@@ -225,6 +234,7 @@ async function main() {
             // Connect to the MCP server
             await mcpServer.connect(transport);
         } else {
+            console.log(`[MCP Router] DIAGNOSTIC: Taking 'invalid request' branch.`);
             // Invalid request
             res.status(400).json({
                 jsonrpc: '2.0',
@@ -239,6 +249,8 @@ async function main() {
 
         // Handle the request
         try {
+            console.log(`[MCP Router] DIAGNOSTIC: Calling transport.handleRequest...`);
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
             await transport.handleRequest(req, res, req.body);
         } catch (error: any) {
             console.error(`[MCP Router] Error handling request in transport:`, error);
